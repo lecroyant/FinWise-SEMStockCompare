@@ -10,11 +10,11 @@ import {
 } from "recharts";
 
 /**
- * SEMStockComparisonApp – FinWise Stock Comparison Tool (CRA version)
- * ------------------------------------------------------------------
+ * SEMStockComparisonApp – FinWise Stock Comparison Tool (CRA‑friendly)
+ * -------------------------------------------------------------------
  * • Pure React + Recharts + Tailwind classes (no ShadCN / alias imports)
  * • Fetches two raw‑CSV files on GitHub and lets users compare up to
- *   four stocks vs. SEMDEX / SEM‑10 over common timeframes.
+ *   four stocks vs SEMDEX / SEM‑10 over common timeframes.
  */
 
 const CATEGORY_CSV =
@@ -22,217 +22,185 @@ const CATEGORY_CSV =
 const PRICES_CSV =
   "https://raw.githubusercontent.com/lecroyant/sem-csv/main/Historical-TopSEM%20Mauritius%20Stock%20Price.csv";
 
-/* ------------------------------------------------------------------
-   Lightweight CSV parser (handles quoted commas, trims blanks)        
-   ------------------------------------------------------------------*/
-const parseCSV = (text) => {
-  const lines = text.trim().split(/\r?\n/).filter(Boolean);
-  if (!lines.length) return [];
-  const headers = lines[0]
-    .split(',')
-    .map((h) => h.trim().replace(/^"|"$/g, ''));
+// ────────────────────────────────────────────────────────────
+//  Tiny CSV parser (handles quoted commas)
+// ────────────────────────────────────────────────────────────
+function parseCSV(text) {
+  const rows = text.trim().split(/\r?\n/).filter(Boolean);
+  if (!rows.length) return [];
+  const headers = rows[0].split(',').map((h) => h.replace(/^"|"$/g, '').trim());
 
-  return lines.slice(1).map((raw) => {
+  return rows.slice(1).map((raw) => {
     const vals = [];
-    let cur = '';
-    let inQuotes = false;
+    let buf = '';
+    let inQ = false;
     for (const ch of raw) {
-      if (ch === '"') inQuotes = !inQuotes;
-      else if (ch === ',' && !inQuotes) {
-        vals.push(cur.trim().replace(/^"|"$/g, ''));
-        cur = '';
-      } else cur += ch;
+      if (ch === '"') inQ = !inQ;
+      else if (ch === ',' && !inQ) {
+        vals.push(buf.replace(/^"|"$/g, '').trim());
+        buf = '';
+      } else buf += ch;
     }
-    vals.push(cur.trim().replace(/^"|"$/g, ''));
-
-    return headers.reduce((o, h, i) => {
-      o[h] = vals[i] ?? '';
-      return o;
-    }, {});
+    vals.push(buf.replace(/^"|"$/g, '').trim());
+    return headers.reduce((o, h, i) => ((o[h] = vals[i] ?? ''), o), {});
   });
-};
+}
 
 export default function SEMStockComparisonApp() {
-  /* ---------------- state ---------------- */
+  // ───────── state
   const [stockList, setStockList] = useState([]);
   const [priceData, setPriceData] = useState([]);
-  const [baseTicker, setBaseTicker] = useState('MCB');
+  const [base, setBase] = useState('MCB');
   const [mode, setMode] = useState('single'); // single | peer | custom
-  const [customTickers, setCustomTickers] = useState([]);
-  const [customInput, setCustomInput] = useState('');
-  const [timeframe, setTimeframe] = useState('3M');
-  const [status, setStatus] = useState('loading'); // loading | ready | error
-  const [errorMsg, setErrorMsg] = useState('');
+  const [custom, setCustom] = useState([]);
+  const [input, setInput] = useState('');
+  const [tf, setTf] = useState('3M');
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
 
-  /* ---------------- data fetch ---------------- */
+  // ───────── fetch CSVs once
   useEffect(() => {
     (async () => {
       try {
-        const [catRes, prRes] = await Promise.all([
+        const [catsRes, pricesRes] = await Promise.all([
           fetch(CATEGORY_CSV),
           fetch(PRICES_CSV),
         ]);
-        if (!catRes.ok || !prRes.ok) throw new Error('CSV download failed');
+        if (!catsRes.ok || !pricesRes.ok) throw new Error('CSV download failed');
+        const cats = parseCSV(await catsRes.text());
+        const pricesText = await pricesRes.text();
+        const pricesRaw = parseCSV(pricesText);
 
-        const catRows = parseCSV(await catRes.text());
-        const priceRows = parseCSV(await prRes.text());
+        setStockList(
+          cats
+            .map((r) => ({
+              symbol: (r.Symbol || r.symbol || '').trim(),
+              company: (r.Company || r.company || '').trim(),
+              sector: (r.Sector || r.sector || '').trim(),
+            }))
+            .filter((s) => s.symbol)
+        );
 
-        const stocks = catRows
-          .map((r) => ({
-            symbol: (r.Symbol || r.symbol || '').trim(),
-            company: (r.Company || r.company || '').trim(),
-            sector: (r.Sector || r.sector || '').trim(),
-          }))
-          .filter((s) => s.symbol);
-        setStockList(stocks);
-
-        const prices = priceRows
-          .map((row) => {
-            const dateStr = row.Date || row.date || row.DATE;
-            const date = dateStr ? new Date(dateStr) : null;
-            if (!date || isNaN(date)) return null;
-            const obj = { date };
-            Object.entries(row).forEach(([k, v]) => {
-              if (k.toLowerCase().includes('date')) return;
-              const num = parseFloat(v);
-              obj[k.trim()] = Number.isFinite(num) ? num : null;
-            });
-            return obj;
-          })
-          .filter(Boolean)
-          .sort((a, b) => b.date - a.date);
-        setPriceData(prices);
-        setStatus('ready');
-      } catch (err) {
-        setErrorMsg(err.message);
-        setStatus('error');
+        setPriceData(
+          pricesRaw
+            .map((row) => {
+              const d = new Date(row.Date || row.date || row.DATE);
+              if (isNaN(d)) return null;
+              const obj = { date: d };
+              Object.entries(row).forEach(([k, v]) => {
+                if (k.toLowerCase().includes('date')) return;
+                const num = parseFloat(v);
+                obj[k.trim()] = Number.isFinite(num) ? num : null;
+              });
+              return obj;
+            })
+            .filter(Boolean)
+            .sort((a, b) => b.date - a.date)
+        );
+        setLoading(false);
+      } catch (e) {
+        setError(e.message);
+        setLoading(false);
       }
     })();
   }, []);
 
-  /* ---------------- derived helpers ---------------- */
-  const peerTickers = useMemo(() => {
-    const base = stockList.find((s) => s.symbol === baseTicker);
-    if (!base) return [];
-    return stockList
-      .filter((s) => s.sector === base.sector && s.symbol !== baseTicker)
-      .map((s) => s.symbol)
-      .slice(0, 3);
-  }, [stockList, baseTicker]);
+  // ───────── derived helpers
+  const peers = useMemo(() => {
+    const s = stockList.find((x) => x.symbol === base);
+    if (!s) return [];
+    return stockList.filter((x) => x.sector === s.sector && x.symbol !== base).map((x) => x.symbol).slice(0, 3);
+  }, [stockList, base]);
 
-  const activeTickers = useMemo(() => {
-    const set = new Set([baseTicker]);
-    if (mode === 'peer') peerTickers.forEach((t) => set.add(t));
-    if (mode === 'custom') customTickers.forEach((t) => set.add(t));
-    return Array.from(set).slice(0, 4);
-  }, [baseTicker, mode, peerTickers, customTickers]);
+  const actives = useMemo(() => {
+    const s = new Set([base]);
+    if (mode === 'peer') peers.forEach((t) => s.add(t));
+    if (mode === 'custom') custom.forEach((t) => s.add(t));
+    return Array.from(s).slice(0, 4);
+  }, [base, mode, peers, custom]);
 
-  const filteredData = useMemo(() => {
+  const periodData = useMemo(() => {
     if (!priceData.length) return [];
     const start = new Date(priceData[0].date);
-    const map = { '1M': 1, '3M': 3, '1Y': 12, '2Y': 24, '3Y': 36 };
-    if (timeframe === 'YTD') start.setMonth(0, 1);
-    else if (map[timeframe]) start.setMonth(start.getMonth() - map[timeframe]);
+    const m = { '1M': 1, '3M': 3, '1Y': 12, '2Y': 24, '3Y': 36 };
+    if (tf === 'YTD') start.setMonth(0, 1);
+    else if (m[tf]) start.setMonth(start.getMonth() - m[tf]);
     return priceData.filter((r) => r.date >= start);
-  }, [priceData, timeframe]);
+  }, [priceData, tf]);
 
   const chartData = useMemo(() => {
-    if (!filteredData.length) return [];
+    if (!periodData.length) return [];
     const bases = {};
-    const tail = filteredData.at(-1);
-    [...activeTickers, 'SEMDEX', 'SEM-10'].forEach((t) => {
-      bases[t] = tail[t] || null;
-    });
-    return filteredData
+    const tail = periodData.at(-1);
+    [...actives, 'SEMDEX', 'SEM-10'].forEach((t) => (bases[t] = tail[t] || null));
+    return periodData
       .slice()
       .reverse()
       .map((row) => {
         const p = { date: row.date.toLocaleDateString() };
-        [...activeTickers, 'SEMDEX', 'SEM-10'].forEach((t) => {
-          const base = bases[t];
-          const cur = row[t];
-          if (base && cur) p[t] = (cur / base) * 100;
+        [...actives, 'SEMDEX', 'SEM-10'].forEach((t) => {
+          const b = bases[t];
+          const c = row[t];
+          if (b && c) p[t] = (c / b) * 100;
         });
         return p;
       });
-  }, [filteredData, activeTickers]);
+  }, [periodData, actives]);
 
-  const returnsTable = useMemo(() => {
-    if (!filteredData.length) return [];
-    const first = filteredData.at(-1);
-    const last = filteredData[0];
-    return [...activeTickers, 'SEMDEX', 'SEM-10'].map((t) => {
+  const summary = useMemo(() => {
+    if (!periodData.length) return [];
+    const first = periodData.at(-1);
+    const last = periodData[0];
+    return [...actives, 'SEMDEX', 'SEM-10'].map((t) => {
       const s = first[t], e = last[t];
-      const pct = s && e ? (((e - s) / s) * 100).toFixed(2) : '–';
-      return { ticker: t, pct };
+      return { ticker: t, pct: s && e ? (((e - s) / s) * 100).toFixed(2) : '–' };
     });
-  }, [filteredData, activeTickers]);
+  }, [periodData, actives]);
 
-  /* ---------------- UI helpers ---------------- */
-  const colors = ['#0ea5e9', '#10b981', '#f59e0b', '#ef4444', '#64748b', '#8b5cf6'];
+  // ───────── helpers
+  const palette = ['#0ea5e9', '#10b981', '#f59e0b', '#ef4444', '#64748b', '#8b5cf6'];
 
-  const handleCustom = (val) => {
-    setCustomInput(val);
-    const tickers = val
-      .split(/[,;\s]+/)
-      .map((v) => v.toUpperCase())
-      .filter(Boolean)
-      .filter((v) => v !== baseTicker)
-      .slice(0, 3);
-    setCustomTickers(tickers);
+  const onCustomChange = (val) => {
+    setInput(val);
+    setCustom(
+      val
+        .split(/[,;\s]+/)
+        .map((v) => v.toUpperCase())
+        .filter(Boolean)
+        .filter((v) => v !== base)
+        .slice(0, 3)
+    );
   };
 
-  /* ---------------- early exits ---------------- */
-  if (status === 'loading') return <p className="text-center p-8">Loading…</p>;
-  if (status === 'error') return <p className="text-red-600 text-center p-8">{errorMsg}</p>;
+  // ───────── early states
+  if (loading) return <p className="text-center p-8">Loading…</p>;
+  if (error) return <p className="text-red-600 text-center p-8">{error}</p>;
 
-  /* ---------------- render ---------------- */
+  // ───────── render
   return (
     <div className="min-h-screen bg-gray-50 py-8">
-      <div className="max-w-7xl mx-auto space-y-8 px-4">
-        {/* Header */}
+      <div className="max-w-7xl mx-auto px-4 space-y-8">
         <header className="text-center space-y-1">
-          <h1 className="text-3xl font-bold">FinWise – SEM Stock Comparison</h1>
-          <p className="text-gray-600">Compare performance of Mauritius equities vs indices</p>
+          <h1 className="text-3xl font-bold">FinWise – SEM Stock Comparison</h1>
+          <p className="text-gray-600">Compare Mauritius equities vs indices</p>
         </header>
 
         {/* Controls */}
         <section className="grid gap-4 md:grid-cols-4">
-          {/* primary select */}
           <div>
             <label className="block text-sm mb-1">Primary Stock</label>
-            <select
-              value={baseTicker}
-              onChange={(e) => setBaseTicker(e.target.value)}
-              className="w-full border p-2 rounded"
-            >
+            <select value={base} onChange={(e) => setBase(e.target.value)} className="w-full border p-2 rounded">
               {stockList.map((s) => (
                 <option key={s.symbol} value={s.symbol}>{`${s.symbol} – ${s.company}`}</option>
               ))}
             </select>
           </div>
 
-          {/* timeframe */}
           <div>
             <label className="block text-sm mb-1">Timeframe</label>
-            <select
-              value={timeframe}
-              onChange={(e) => setTimeframe(e.target.value)}
-              className="w-full border p-2 rounded"
-            >
-              {['1M', '3M', '1Y', '2Y', '3Y', 'YTD'].map((tf) => (
-                <option key={tf} value={tf}>{tf}</option>
+            <select value={tf} onChange={(e) => setTf(e.target.value)} className="w-full border p-2 rounded">
+              {['1M', '3M', '1Y', '2Y', '3Y', 'YTD'].map((x) => (
+                <option key={x} value={x}>{x}</option>
               ))}
             </select>
-          </div>
-
-          {/* mode buttons */}
-          <div className="flex items-end gap-2">
-            {[
-              { id: 'single', label: 'Single' },
-              { id: 'peer', label: 'Peers' },
-              { id: 'custom', label: 'Custom' },
-            ].map((m) => (
-              <button
-                key={m.id}
-                className={`px-3 py-2 rounded-md text-sm ${
+          </
